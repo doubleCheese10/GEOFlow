@@ -305,12 +305,37 @@ final class UrlImportProcessingService
         }
 
         $records = @dns_get_record($host, DNS_A + DNS_AAAA);
+
+        // 开关：默认 false（严格），开启后跳过 ULA 地址兼容透明代理/Docker 环境
+        $allowMixedDns = filter_var(env('URL_IMPORT_ALLOW_MIXED_DNS', false), FILTER_VALIDATE_BOOL);
+
         foreach ($records ?: [] as $record) {
             $ip = (string) ($record['ip'] ?? $record['ipv6'] ?? '');
-            if ($ip !== '' && filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) === false) {
+            if ($ip === '') {
+                continue;
+            }
+            // ULA 地址 (fc00::/7)：永不全球路由，来自代理/DNS 注入，非真实攻击面
+            if ($allowMixedDns && self::isUlaAddress($ip)) {
+                continue;
+            }
+            if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) === false) {
                 throw new \InvalidArgumentException(__('admin.url_import.error.private_url'));
             }
         }
+    }
+
+    /**
+     * 判断是否为 ULA 地址 (fc00::/7)。
+     * ULA 永不全球路由，来自透明代理/Docker DNS 注入，不构成 SSRF 威胁。
+     */
+    private static function isUlaAddress(string $ip): bool
+    {
+        if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) === false) {
+            return false;
+        }
+        $bin = @inet_pton($ip);
+
+        return $bin !== false && (ord($bin[0]) & 0xfe) === 0xfc;
     }
 
     /**
